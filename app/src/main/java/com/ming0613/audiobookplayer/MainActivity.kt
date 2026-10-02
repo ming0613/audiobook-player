@@ -1,47 +1,58 @@
 package com.ming0613.audiobookplayer
 
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.tooling.preview.Preview
+import androidx.navigation.NavType
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
+import com.ming0613.audiobookplayer.ui.library.LibraryScreen
+import com.ming0613.audiobookplayer.ui.player.PlayerScreen
 import com.ming0613.audiobookplayer.ui.theme.AudiobookPlayerTheme
 
+/**
+ * App 唯一入口 Activity。
+ * 单 Activity 架构：所有"页面"都是 Compose 函数，由 NavHost 负责切换。
+ */
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
             AudiobookPlayerTheme {
-                Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                    Greeting(
-                        name = "Android",
-                        modifier = Modifier.padding(innerPadding)
-                    )
-                }
+                AppNavHost()
             }
         }
     }
 }
 
-@Composable
-fun Greeting(name: String, modifier: Modifier = Modifier) {
-    Text(
-        text = "Hello $name!",
-        modifier = modifier
-    )
+private object Routes {
+    const val LIBRARY = "library"
+    const val PLAYER = "player/{bookId}"
+
+    fun player(bookId: String) = "player/${Uri.encode(bookId)}"
 }
 
-@Preview(showBackground = true)
 @Composable
-fun GreetingPreview() {
-    AudiobookPlayerTheme {
-        Greeting("Android")
+fun AppNavHost() {
+    val navController = rememberNavController()
+    NavHost(navController = navController, startDestination = Routes.LIBRARY) {
+        composable(Routes.LIBRARY) {
+            LibraryScreen(
+                onBookClick = { bookId -> navController.navigate(Routes.player(bookId)) }
+            )
+        }
+        composable(
+            route = Routes.PLAYER,
+            arguments = listOf(navArgument("bookId") { type = NavType.StringType })
+        ) { backStackEntry ->
+            val bookId = Uri.decode(backStackEntry.arguments?.getString("bookId").orEmpty())
+            PlayerScreen(bookId = bookId)
+        }
     }
 }
