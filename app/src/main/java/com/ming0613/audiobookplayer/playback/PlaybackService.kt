@@ -59,7 +59,7 @@ class PlaybackService : MediaSessionService() {
             .setSessionActivity(sessionActivity)
             .build()
 
-        // 暂停 / 切章时立即保存进度
+        // 暂停 / 切章时立即保存进度（监听器回调在主线程，可直接读播放器状态）
         player.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 if (!isPlaying) saveProgress(player)
@@ -71,7 +71,10 @@ class PlaybackService : MediaSessionService() {
         })
 
         // 播放中每 5 秒落盘一次
-        serviceScope.launch {
+        // 注意：ExoPlayer 的所有方法必须在主线程访问（否则抛
+        // IllegalStateException: Player is accessed on the wrong thread），
+        // 所以轮询循环跑在 Dispatchers.Main，只有数据库写入才切到 IO。
+        serviceScope.launch(Dispatchers.Main) {
             while (isActive) {
                 delay(5000)
                 if (player.isPlaying) saveProgress(player)
