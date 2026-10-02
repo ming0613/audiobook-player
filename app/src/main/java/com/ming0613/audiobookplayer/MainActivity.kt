@@ -51,8 +51,12 @@ fun AppNavHost() {
             route = Routes.PLAYER,
             arguments = listOf(navArgument("bookId") { type = NavType.StringType })
         ) { backStackEntry ->
-            val bookId = Uri.decode(backStackEntry.arguments?.getString("bookId").orEmpty())
-            PlayerScreen(bookId = bookId)
+            // 注意：Navigation 库解析路由时已自动解码一次，这里直接用原值，切勿再 Uri.decode
+            val bookId = backStackEntry.arguments?.getString("bookId").orEmpty()
+            PlayerScreen(
+                bookId = bookId,
+                onBack = { navController.popBackStack() }
+            )
         }
     }
 }
