@@ -1,6 +1,9 @@
 package com.ming0613.audiobookplayer.ui.player
 
 import androidx.compose.foundation.layout.Arrangement
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -31,6 +34,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -53,6 +57,16 @@ fun PlayerScreen(
     viewModel: PlayerViewModel = viewModel(factory = PlayerViewModel.factory(bookId))
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+
+    // Android 13+ 需要动态申请通知权限，否则播放通知不显示
+    val notificationPermission = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { /* 结果不强制处理：拒绝后只是看不到通知，播放不受影响 */ }
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= 33) {
+            notificationPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
 
     Scaffold(
         topBar = {
