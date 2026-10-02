@@ -52,7 +52,10 @@ fun AppNavHost() {
             arguments = listOf(navArgument("bookId") { type = NavType.StringType })
         ) { backStackEntry ->
             val bookId = Uri.decode(backStackEntry.arguments?.getString("bookId").orEmpty())
-            PlayerScreen(bookId = bookId)
+            PlayerScreen(
+                bookId = bookId,
+                onBack = { navController.popBackStack() }
+            )
         }
     }
 }

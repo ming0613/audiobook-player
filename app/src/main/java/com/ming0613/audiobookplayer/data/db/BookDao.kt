@@ -23,6 +23,26 @@ interface BookDao {
     @Query("SELECT * FROM books")
     suspend fun getBooksSnapshot(): List<BookEntity>
 
+    @Query("SELECT * FROM books WHERE id = :bookId")
+    suspend fun getBook(bookId: String): BookEntity?
+
+    /** 保存收听进度（US-C1）：当前章节 + 章内位置 + 上次收听时间 */
+    @Query(
+        """
+        UPDATE books
+        SET currentChapterIndex = :chapterIndex,
+            currentPositionMs = :positionMs,
+            lastPlayedAt = :lastPlayedAt
+        WHERE id = :bookId
+        """
+    )
+    suspend fun updateProgress(
+        bookId: String,
+        chapterIndex: Int,
+        positionMs: Long,
+        lastPlayedAt: Long
+    )
+
     @Query("SELECT * FROM chapters WHERE bookId = :bookId ORDER BY `index` ASC")
     suspend fun getChapters(bookId: String): List<ChapterEntity>
 
