@@ -1,13 +1,18 @@
 package com.ming0613.audiobookplayer.playback
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
+import android.os.Build
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import com.ming0613.audiobookplayer.MainActivity
+import com.ming0613.audiobookplayer.R
 import com.ming0613.audiobookplayer.data.db.AudiobookDatabase
 import com.ming0613.audiobookplayer.data.db.BookDao
 import kotlinx.coroutines.CoroutineScope
@@ -45,6 +50,17 @@ class PlaybackService : MediaSessionService() {
         super.onCreate()
         dao = AudiobookDatabase.get(this).bookDao()
 
+        // Media3 默认用 IMPORTANCE_LOW 频道发媒体通知，
+        // 在部分 ROM（如 ColorOS）上会被折叠/锁屏不显示。
+        // 这里自建 IMPORTANCE_DEFAULT 频道并让框架使用它。
+        ensureMediaNotificationChannel()
+        setMediaNotificationProvider(
+            DefaultMediaNotificationProvider.Builder(this)
+                .setChannelId(MEDIA_CHANNEL_ID)
+                .setChannelName(R.string.media_notification_channel_name)
+                .build()
+        )
+
         val player = ExoPlayer.Builder(this).build()
 
         // 点击通知回到 App
@@ -59,7 +75,7 @@ class PlaybackService : MediaSessionService() {
             .setSessionActivity(sessionActivity)
             .build()
 
-        // 暂停 / 切章时立即保存进度（监听器回调在主线程，可直接读播放器状态）
+        // 暂停 / 切章时立即保存进度
         player.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 if (!isPlaying) saveProgress(player)
@@ -84,6 +100,28 @@ class PlaybackService : MediaSessionService() {
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? =
         mediaSession
+
+    /** 预先创建"默认重要性"的媒体通知频道；框架检测到已存在就不会再用 LOW 覆盖 */
+    private fun ensureMediaNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val manager = getSystemService(NotificationManager::class.java)
+            if (manager.getNotificationChannel(MEDIA_CHANNEL_ID) == null) {
+                manager.createNotificationChannel(
+                    NotificationChannel(
+                        MEDIA_CHANNEL_ID,
+                        getString(R.string.media_notification_channel_name),
+                        NotificationManager.IMPORTANCE_DEFAULT
+                    ).apply {
+                        description = getString(R.string.media_notification_channel_description)
+                    }
+                )
+            }
+        }
+    }
+
+    companion object {
+        private const val MEDIA_CHANNEL_ID = "media_playback_channel"
+    }
 
     private fun saveProgress(player: Player) {
         val bookId = player.currentMediaItem?.mediaId.orEmpty()

@@ -1,3 +1,5 @@
 <resources>
     <string name="app_name">Audiobook Player</string>
+    <string name="media_notification_channel_name">播放控制</string>
+    <string name="media_notification_channel_description">收听时的播放/暂停/切章控制卡片</string>
 </resources>
