@@ -9,6 +9,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
@@ -95,9 +96,19 @@ class PlayerViewModel(
             val startIndex = book.currentChapterIndex.coerceIn(0, chapters.size - 1)
 
             // bookId 藏进 mediaId：PlaybackService 保存进度时要靠它找到书
+            // 元数据（标题/艺术家）是媒体通知卡片的展示内容，缺失会导致部分 ROM 渲染失败
             controller.setMediaItems(
-                chapters.map {
-                    MediaItem.Builder().setMediaId(bookId).setUri(it.uri).build()
+                chapters.map { chapter ->
+                    MediaItem.Builder()
+                        .setMediaId(bookId)
+                        .setUri(chapter.uri)
+                        .setMediaMetadata(
+                            MediaMetadata.Builder()
+                                .setTitle(chapter.name)
+                                .setArtist(book.name)
+                                .build()
+                        )
+                        .build()
                 },
                 startIndex,
                 book.currentPositionMs.coerceAtLeast(0)
