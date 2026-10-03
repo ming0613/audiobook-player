@@ -1,19 +1,22 @@
 package com.ming0613.audiobookplayer.ui.player
 
 import android.app.Application
+import android.content.ComponentName
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.Companion.APPLICATION_KEY
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
-import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.session.MediaController
+import androidx.media3.session.SessionToken
 import com.ming0613.audiobookplayer.data.SettingsRepository
 import com.ming0613.audiobookplayer.data.db.AudiobookDatabase
 import com.ming0613.audiobookplayer.data.db.ChapterEntity
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
+import com.ming0613.audiobookplayer.playback.PlaybackService
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -41,12 +44,12 @@ data class PlayerUiState(
 )
 
 /**
- * 播放页的大脑。直接持有 ExoPlayer 实例（简单 App 的实用做法；
- * 后续做后台播放时会迁移到 MediaSessionService）。
+ * 播放页的大脑（Sprint 2 版）。
  *
- * 进度保存策略（US-C1）：
- *  - 播放中每 5 秒自动保存
- *  - 暂停、切章、退出页面时立即保存
+ * 与 Sprint 1 的关键区别：不再持有 ExoPlayer，而是持有 MediaController——
+ * 一个指向 PlaybackService 里播放器的"遥控器"。
+ * 本类只负责：发命令、收状态、驱动 UI。
+ * 进度保存已上移到 PlaybackService（UI 死了也要继续落盘）。
  */
 class PlayerViewModel(
     application: Application,
@@ -56,17 +59,31 @@ class PlayerViewModel(
     private val dao = AudiobookDatabase.get(application).bookDao()
     private val settings = SettingsRepository(application)
 
-    private val player: ExoPlayer = ExoPlayer.Builder(application).build()
+    /** 遥控器：异步连接，连接成功前为 null，所有命令都要判空 */
+    private var controller: MediaController? = null
     private var chapters: List<ChapterEntity> = emptyList()
 
     private val _uiState = MutableStateFlow(PlayerUiState())
     val uiState: StateFlow<PlayerUiState> = _uiState
 
     private var positionJob: Job? = null
-    private var saveJob: Job? = null
 
     init {
-        player.addListener(this)
+        // 连接 PlaybackService：若服务未运行，系统会自动唤起它
+        val sessionToken = SessionToken(application, ComponentName(application, PlaybackService::class.java))
+        val controllerFuture = MediaController.Builder(application, sessionToken).buildAsync()
+        controllerFuture.addListener(
+            {
+                val c = controllerFuture.get()
+                controller = c
+                c.addListener(this@PlayerViewModel)
+                loadBook(c)
+            },
+            ContextCompat.getMainExecutor(application)
+        )
+    }
+
+    private fun loadBook(controller: MediaController) {
         viewModelScope.launch {
             val book = dao.getBook(bookId)
             chapters = dao.getChapters(bookId)
@@ -75,16 +92,29 @@ class PlayerViewModel(
                 return@launch
             }
 
-            // 恢复上次倍速 + 从上次位置续听（US-B1）
             val speed = settings.playbackSpeed.first()
             val startIndex = book.currentChapterIndex.coerceIn(0, chapters.size - 1)
-            player.setPlaybackSpeed(speed)
-            player.setMediaItems(
-                chapters.map { MediaItem.fromUri(it.uri) },
+
+            // bookId 藏进 mediaId：PlaybackService 保存进度时要靠它找到书
+            // 元数据（标题/艺术家）是媒体通知卡片的展示内容，缺失会导致部分 ROM 渲染失败
+            controller.setMediaItems(
+                chapters.map { chapter ->
+                    MediaItem.Builder()
+                        .setMediaId(bookId)
+                        .setUri(chapter.uri)
+                        .setMediaMetadata(
+                            MediaMetadata.Builder()
+                                .setTitle(chapter.name)
+                                .setArtist(book.name)
+                                .build()
+                        )
+                        .build()
+                },
                 startIndex,
                 book.currentPositionMs.coerceAtLeast(0)
             )
-            player.prepare()
+            controller.setPlaybackSpeed(speed)
+            controller.prepare()
 
             _uiState.value = PlayerUiState(
                 loading = false,
@@ -95,20 +125,18 @@ class PlayerViewModel(
                 speed = speed
             )
             startPositionPolling()
-            startPeriodicSave()
         }
     }
 
-    // ---- 用户操作 ----
+    // ---- 用户操作（全部转发给遥控器） ----
 
     fun togglePlayPause() {
-        if (player.isPlaying) player.pause() else player.play()
+        controller?.let { if (it.isPlaying) it.pause() else it.play() }
     }
 
     fun seekTo(positionMs: Long) {
-        player.seekTo(positionMs)
+        controller?.seekTo(positionMs)
         _uiState.value = _uiState.value.copy(positionMs = positionMs, dragging = false)
-        saveProgress()
     }
 
     fun onDragStart() {
@@ -119,32 +147,34 @@ class PlayerViewModel(
         _uiState.value = _uiState.value.copy(positionMs = positionMs)
     }
 
-    fun nextChapter() = player.seekToNextMediaItem()
+    fun nextChapter() {
+        controller?.seekToNextMediaItem()
+    }
 
-    fun prevChapter() = player.seekToPreviousMediaItem()
+    fun prevChapter() {
+        controller?.seekToPreviousMediaItem()
+    }
 
     fun setSpeed(speed: Float) {
-        player.setPlaybackSpeed(speed)
+        controller?.setPlaybackSpeed(speed)
         _uiState.value = _uiState.value.copy(speed = speed)
         viewModelScope.launch { settings.savePlaybackSpeed(speed) }
     }
 
-    // ---- ExoPlayer 事件回调 ----
+    // ---- 播放器事件回调（经遥控器转发自 Service） ----
 
     override fun onIsPlayingChanged(isPlaying: Boolean) {
         _uiState.value = _uiState.value.copy(isPlaying = isPlaying)
-        if (!isPlaying) saveProgress()
     }
 
     override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-        saveProgress() // 先保存上一章的结尾位置
         updateChapterInfo()
     }
 
     override fun onPlaybackStateChanged(playbackState: Int) {
         if (playbackState == Player.STATE_READY) {
             _uiState.value = _uiState.value.copy(
-                durationMs = player.duration.coerceAtLeast(0)
+                durationMs = controller?.duration?.coerceAtLeast(0) ?: 0
             )
         }
     }
@@ -152,12 +182,13 @@ class PlayerViewModel(
     // ---- 内部机制 ----
 
     private fun updateChapterInfo() {
-        val index = player.currentMediaItemIndex.coerceIn(0, chapters.size - 1)
+        val c = controller ?: return
+        val index = c.currentMediaItemIndex.coerceIn(0, chapters.size - 1)
         _uiState.value = _uiState.value.copy(
             chapterIndex = index,
             chapterName = chapters.getOrNull(index)?.name.orEmpty(),
             positionMs = 0,
-            durationMs = player.duration.coerceAtLeast(0)
+            durationMs = c.duration.coerceAtLeast(0)
         )
     }
 
@@ -166,44 +197,23 @@ class PlayerViewModel(
         positionJob = viewModelScope.launch {
             while (isActive) {
                 delay(500)
-                if (!_uiState.value.dragging && player.isPlaying) {
+                val c = controller
+                if (c != null && !_uiState.value.dragging && c.isPlaying) {
                     _uiState.value = _uiState.value.copy(
-                        positionMs = player.currentPosition.coerceAtLeast(0),
-                        durationMs = player.duration.coerceAtLeast(0)
+                        positionMs = c.currentPosition.coerceAtLeast(0),
+                        durationMs = c.duration.coerceAtLeast(0)
                     )
                 }
             }
         }
     }
 
-    /** 播放中每 5 秒落盘一次进度（US-C1 的"定期自动保存"） */
-    private fun startPeriodicSave() {
-        saveJob = viewModelScope.launch {
-            while (isActive) {
-                delay(5000)
-                if (player.isPlaying) saveProgress()
-            }
-        }
-    }
-
-    private fun saveProgress() {
-        val chapterIndex = player.currentMediaItemIndex
-        val positionMs = player.currentPosition.coerceAtLeast(0)
-        CoroutineScope(Dispatchers.IO).launch {
-            dao.updateProgress(
-                bookId = bookId,
-                chapterIndex = chapterIndex,
-                positionMs = positionMs,
-                lastPlayedAt = System.currentTimeMillis()
-            )
-        }
-    }
-
     override fun onCleared() {
-        saveProgress() // 退出页面前最后一存
+        // 只释放"遥控器"，不停止播放——后台播放的关键就在这里
+        controller?.removeListener(this)
+        controller?.release()
+        controller = null
         positionJob?.cancel()
-        saveJob?.cancel()
-        player.release()
         super.onCleared()
     }
 
